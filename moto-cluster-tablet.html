@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cluster</title>
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<style>
+  :root {
+    --cyan:  #4bc9e8;
+    --green: #5fc98a;
+    --amber: #d99a3c;
+    --red:   #e04a5c;
+    --ink:   #cfe0ee;
+    --dim:   #5d7186;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; background: #000; }
+  body {
+    font-family: "Rajdhani", "DIN Alternate", "Roboto Condensed", Arial, sans-serif;
+    font-weight: 300; color: var(--ink);
+  }
+
+  /* ------------------------------------------------------------------
+     The stage. Everything is positioned inside this box and cropped by
+     it, so the layout keeps its shape whatever screen it lands on.
+     Set --ar to the aspect ratio of the display you end up buying:
+        4/1    1920x480 automotive strip
+        3.2/1  1280x400
+        1.6/1  1280x800 tablet
+     ------------------------------------------------------------------ */
+  :root { --ar: 1920 / 1200; }   /* Galaxy Tab A9+ 5G, 11" */
+
+  #stage {
+    position: absolute; inset: 0; margin: auto;
+    aspect-ratio: var(--ar);
+    width: 100%; height: 100%;
+    max-width: calc(100vh * (var(--ar)));
+    max-height: calc(100vw / (var(--ar)));
+    container-type: size;
+    overflow: hidden;
+    background: #03060b;
+  }
+
+  /* ---- Map: always behind everything. Swap in MapLibre here. ---- */
+  #map, #mapfb { position: absolute; inset: 0; background: #050a12; }
+  #map { opacity: 0.9; }
+  #rider { position: absolute; left: 50%; top: 50%; width: 4.4cqmin; height: 4.4cqmin;
+           transform: translate(-50%, -50%); pointer-events: none; display: none; }
+  #mapfb svg { width: 100%; height: 100%; display: block; opacity: 0.45; }
+  #attrib { position: absolute; left: 50%; bottom: 0.4cqmin; transform: translateX(-50%);
+            font-size: 1.8cqmin; color: #2c3f52; letter-spacing: 0.04em; pointer-events: none; }
+  #vig { position: absolute; inset: 0; pointer-events: none;
+         background: radial-gradient(ellipse at 50% 50%, rgba(3,6,11,0) 22%, rgba(3,6,11,0.92) 78%); }
+
+  .g { position: absolute; }
+  .g svg { width: 100%; height: 100%; display: block; overflow: visible; }
+
+  /* Big dials, pushed past the left and right edges */
+  #g-speed { width: 52cqmin; height: 52cqmin; left: -11cqmin; top: 50%; transform: translateY(-46%); }
+  #g-wedge { width: 46cqmin; height: 46cqmin; right: -10cqmin; top: 47%; transform: translateY(-50%); }
+
+  /* Small dials: exactly half showing, pivot sitting on the screen edge */
+  #g-mos { width: 19cqmin; height: 19cqmin; left: 34%;  top: -9.5cqmin; }
+  #g-mot { width: 19cqmin; height: 19cqmin; left: 47%;  top: -9.5cqmin; }
+  #g-soc { width: 19cqmin; height: 19cqmin; left: 34%;  bottom: -9.5cqmin; }
+  #g-vlt { width: 19cqmin; height: 19cqmin; left: 47%;  bottom: -9.5cqmin; }
+  #g-thr { width: 18cqmin; height: 18cqmin; left: 12%;  bottom: -9cqmin; }
+  #g-rat { width: 18cqmin; height: 18cqmin; left: 22%;  bottom: -9cqmin; }
+  #g-pha { width: 18cqmin; height: 18cqmin; right: 13%; bottom: -9cqmin; }
+  #g-phc { width: 18cqmin; height: 18cqmin; right: 3%;  bottom: -9cqmin; }
+
+  /* ---- Navigation cluster, top left ---- */
+  #nav { position: absolute; left: 2.5cqmin; top: 2cqmin; display: flex; align-items: flex-start; gap: 1.4cqmin; }
+  #turn { display: flex; align-items: center; gap: 0.6cqmin;
+          border: 1px solid #2a6b45; border-radius: 0.7cqmin; padding: 0.5cqmin 1cqmin; }
+  #turn .st { font-size: 3.6cqmin; color: var(--green); }
+  #turn svg { width: 4.4cqmin; height: 4.4cqmin; }
+  #navtext { font-size: 2.6cqmin; line-height: 1.4; color: var(--amber); letter-spacing: 0.05em; }
+  #limit { width: 8cqmin; height: 8cqmin; flex: 0 0 auto; }
+
+  /* ---- Gear, top right ---- */
+  #gear { position: absolute; right: 2.5cqmin; top: 2cqmin;
+          border: 1px solid #1e344d; border-radius: 0.6cqmin; padding: 0.6cqmin 1.4cqmin;
+          display: flex; gap: 1.6cqmin; font-size: 3.6cqmin; letter-spacing: 0.1em; color: #33455a; }
+  #gear .act { color: var(--cyan); }
+
+  /* ---- Odometer, bottom left ---- */
+  #odo { position: absolute; left: 2.5cqmin; bottom: 2cqmin;
+         border: 1px solid #1e344d; border-radius: 0.6cqmin; padding: 0.7cqmin 1.3cqmin;
+         display: grid; grid-template-columns: auto auto; gap: 0.35cqmin 1.4cqmin;
+         font-size: 3cqmin; letter-spacing: 0.06em; }
+  #odo .k { color: var(--dim); }
+  #odo .v { text-align: right; color: #8fb4d8; }
+
+  /* ---- Warning lamps, above the map ---- */
+  #lamps { position: absolute; left: 50%; top: 2cqmin; transform: translateX(-50%);
+           display: flex; gap: 1.8cqmin; }
+  .tl { width: 4.4cqmin; height: 4.4cqmin; color: #16283c; transition: color 140ms; }
+  .tl.on { color: var(--c); }
+  .tl.blink { animation: blink 0.72s steps(1) infinite; }
+  @keyframes blink { 50% { color: #16283c; } }
+  @media (prefers-reduced-motion: reduce) { .tl.blink { animation: none; } }
+
+  #connect {
+    position: absolute; inset: 0; z-index: 50;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 2.4cqmin; background: rgba(3,6,11,0.94);
+  }
+  #connect.hidden { display: none; }
+  #connect button {
+    font: inherit; font-size: 3.4cqmin; letter-spacing: 0.1em;
+    color: var(--ink); background: #0d1a2b;
+    border: 1px solid #2c4c6b; border-radius: 1cqmin;
+    padding: 2cqmin 5cqmin; cursor: pointer;
+  }
+  #connect button:active { background: #14263c; }
+  #connect .msg { font-size: 2.2cqmin; color: var(--dim); text-align: center;
+                  max-width: 60%; line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+
+<div id="mapfb">
+  <svg viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <g stroke="#1a2c42" stroke-width="10" fill="none" stroke-linecap="round">
+      <path d="M-100 640 L1700 400"/><path d="M-100 180 L1700 70"/>
+      <path d="M420 -100 L640 1000"/><path d="M1120 -100 L960 1000"/>
+    </g>
+    <g stroke="#12202f" stroke-width="4" fill="none">
+      <path d="M-100 420 L1700 280"/><path d="M-100 880 L1700 620"/>
+      <path d="M800 -100 L830 1000"/><path d="M1400 -100 L1310 1000"/>
+    </g>
+    <path d="M-100 640 L700 535 L830 200" stroke="#3070c0" stroke-width="11"
+          fill="none" stroke-linecap="round"/>
+  </svg>
+</div>
+<div id="map"></div>
+<svg id="rider" viewBox="0 0 40 40" aria-hidden="true">
+  <circle cx="20" cy="20" r="13" fill="#4bc9e8" opacity="0.18"/>
+  <path d="M20 7 L29 31 L20 25.5 L11 31 Z" fill="#4bc9e8" stroke="#eaf6fb" stroke-width="1.4"
+        stroke-linejoin="round"/>
+</svg>
+<div id="vig"></div>
+<div id="attrib">Map data &copy; OpenStreetMap contributors (ODbL) &middot; Routing by OSRM</div>
+
+<div id="nav">
+  <div id="turn">
+    <span class="st">N</span>
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3 L20 12 L15.5 12 L15.5 21 L8.5 21 L8.5 12 L4 12 Z"
+            fill="#5fc98a"/>
+    </svg>
+  </div>
+  <div id="navtext">SPEED LIMIT<br>LIVE TRAFFIC<br>NOTIFICATIONS</div>
+  <svg id="limit" viewBox="0 0 60 60" aria-label="speed limit">
+    <circle cx="30" cy="30" r="27" fill="#0b0f16" stroke="#e04a5c" stroke-width="5"/>
+    <text x="30" y="31" fill="#eaf2fb" font-size="24" font-weight="400"
+          text-anchor="middle" dominant-baseline="central">45</text>
+  </svg>
+</div>
+
+<div id="lamps"></div>
+
+<div id="gear">
+  <span data-g="1">1</span><span data-g="2">2</span>
+  <span data-g="D">D</span><span data-g="R">R</span>
+</div>
+
+<div id="odo">
+  <span class="k">odo</span><span class="v" id="v-odo">&mdash;</span>
+  <span class="k">trip</span><span class="v" id="v-trip">&mdash;</span>
+  <span class="k">avg</span><span class="v" id="v-avgw">&mdash;</span>
+</div>
+
+<div id="connect">
+  <button id="btn-connect">CONNECT TO CONTROLLER</button>
+  <div class="msg" id="connect-msg">Power up the bike and close the Fardriver app first.</div>
+</div>
+
+<div class="g" id="g-speed"></div>
+<div class="g" id="g-wedge"></div>
+<div class="g" id="g-mos"></div>
+<div class="g" id="g-mot"></div>
+<div class="g" id="g-soc"></div>
+<div class="g" id="g-vlt"></div>
+<div class="g" id="g-thr"></div>
+<div class="g" id="g-rat"></div>
+<div class="g" id="g-pha"></div>
+<div class="g" id="g-phc"></div>
+
+</div><!-- /stage -->
+
+<script>
+const NS = 'http://www.w3.org/2000/svg';
+let uid = 0;
+
+/* Distance units. 'mi' or 'km' - affects the odometer, trip and range only;
+   the speedometer face is drawn from its own scale. */
+const UNITS = 'mi';
+const KM_TO = UNITS === 'mi' ? 0.621371 : 1;
+const DIST = UNITS === 'mi' ? 'mi' : 'km';
+
+/* =========================================================================
+   Telltales. Standard shapes, dim until their signal goes true.
+   ========================================================================= */
+const LAMPS = [
+  { k:'left', c:'#5fc98a', blink:true, svg:
+    '<path d="M2.5 7.5 L8 2.5 v3 h4 v4 h-4 v3 z" fill="currentColor"/>' },
+  { k:'highbeam', c:'#4aa8ff', svg:
+    '<path d="M2 3h3.4a4.5 4.5 0 010 9H2z" fill="currentColor"/>' +
+    '<g stroke="currentColor" stroke-width="1.3" stroke-linecap="round">' +
+    '<path d="M8.6 4.5h4M8.6 7.5h4M8.6 10.5h4"/></g>' },
+  { k:'lowbeam', c:'#5fc98a', svg:
+    '<path d="M2 3h3.4a4.5 4.5 0 010 9H2z" fill="currentColor"/>' +
+    '<g stroke="currentColor" stroke-width="1.3" stroke-linecap="round">' +
+    '<path d="M8.6 4.2l3.7 1.7M8.6 7.2l3.7 1.7M8.6 10.2l3.7 1.7"/></g>' },
+  { k:'checkMotor', c:'#d99a3c', svg:
+    '<path d="M1.8 5.6h1.6V4.1h3.1v1.5h1.9l2.2-1.6v2h1.6v3.1h-1.6v2l-2.2-1.6H6.5v1.5H3.4V9.1H1.8z"' +
+    ' fill="currentColor"/>' },
+  { k:'battery', c:'#e04a5c', svg:
+    '<rect x="1.8" y="4.4" width="10.4" height="6.2" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/>' +
+    '<g stroke="currentColor" stroke-width="1.3" stroke-linecap="round">' +
+    '<path d="M4.4 3.2v1.2M9.6 3.2v1.2M3.6 7.5h2.2M8.2 7.5h2.2M9.3 6.4v2.2"/></g>' },
+  { k:'temp', c:'#e04a5c', svg:
+    '<path d="M7 2.4a1.7 1.7 0 011.7 1.7v4.2a2.7 2.7 0 11-3.4 0V4.1A1.7 1.7 0 017 2.4z"' +
+    ' fill="none" stroke="currentColor" stroke-width="1.3"/>' +
+    '<g stroke="currentColor" stroke-width="1.1" stroke-linecap="round" fill="none">' +
+    '<path d="M1.4 10.6c.9-.9 1.8-.9 2.7 0M10 10.6c.9-.9 1.8-.9 2.7 0"/></g>' },
+  { k:'brake', c:'#e04a5c', svg:
+    '<circle cx="7" cy="7.4" r="3.9" fill="none" stroke="currentColor" stroke-width="1.3"/>' +
+    '<g stroke="currentColor" stroke-width="1.3" stroke-linecap="round">' +
+    '<path d="M7 5.1v3M7 9.6v.5M1 4.6c-.7 1.8-.7 3.8 0 5.6M13 4.6c.7 1.8.7 3.8 0 5.6"/></g>' },
+  { k:'regen', c:'#5fc98a', svg:
+    '<path d="M8.4 1.8L3.6 8.2h2.7l-.7 4 4.8-6.4H7.7z" fill="currentColor"/>' },
+  { k:'link', c:'#4bc9e8', svg:
+    '<rect x="3.6" y="3.6" width="6.8" height="6.8" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>' +
+    '<g stroke="currentColor" stroke-width="1.1" stroke-linecap="round">' +
+    '<path d="M5.5 1.7v1.9M8.5 1.7v1.9M5.5 10.4v1.9M8.5 10.4v1.9' +
+    'M1.7 5.5h1.9M1.7 8.5h1.9M10.4 5.5h1.9M10.4 8.5h1.9"/></g>' },
+  { k:'gps', c:'#5fc98a', svg:
+    '<path d="M7 1.9c-2.1 0-3.8 1.7-3.8 3.8 0 2.8 3.8 6.6 3.8 6.6s3.8-3.8 3.8-6.6C10.8 3.6 9.1 1.9 7 1.9z"' +
+    ' fill="none" stroke="currentColor" stroke-width="1.3"/>' +
+    '<circle cx="7" cy="5.6" r="1.4" fill="currentColor"/>' },
+  { k:'right', c:'#5fc98a', blink:true, svg:
+    '<path d="M11.5 7.5 L6 2.5 v3 H2 v4 h4 v3 z" fill="currentColor"/>' }
+];
+
+(function buildLamps() {
+  const host = document.getElementById('lamps');
+  LAMPS.forEach(l => {
+    host.insertAdjacentHTML('beforeend',
+      '<svg class="tl" id="tl-' + l.k + '" viewBox="0 0 14 14" style="--c:' + l.c + '"' +
+      ' role="img" aria-label="' + l.k + '">' + l.svg + '</svg>');
+  });
+})();
+
+function lamp(k, on) {
+  const el = document.getElementById('tl-' + k);
+  if (!el) return;
+  const def = LAMPS.find(l => l.k === k);
+  el.className = 'tl' + (on ? ' on' + (def && def.blink ? ' blink' : '') : '');
+}
+
+/* =========================================================================
+   Live map. Sits behind everything as a dark shadow of the road network:
+   the pale "positron" style is inverted and dimmed, and every label layer
+   is stripped after load so only road geometry survives.
+   ========================================================================= */
+const MAP_CFG = {
+  style: 'https://tiles.openfreemap.org/styles/positron',
+  zoom: 16.2,
+  pitch: 58,          // 0 for a flat top-down view
+  rotateWithHeading: true,
+  useGpsSpeed: false, // true to drive the speedo from GPS instead of the controller
+  showLabels: true,   // false strips street names for a pure road-shadow look
+  rerouteMs: 30000    // OSRM demo server allows 1 request/second; stay well under
+};
+
+/* Colours the map is repainted with after the style loads. */
+const MAP_COL = {
+  bg:        '#060b13',
+  water:     '#08131f',
+  land:      '#080d16',
+  building:  '#0b1220',
+  roadMajor: '#263d55',
+  roadMinor: '#182739',
+  label:     '#61798f',
+  route:     '#3d8fd8',
+  routeCase: '#0d2338'
+};
+
+let map = null, mapReady = false;
+if (window.maplibregl) {
+  try {
+    map = new maplibregl.Map({
+      container: 'map',
+      style: MAP_CFG.style,
+      center: [-80.124, 26.238],
+      zoom: MAP_CFG.zoom,
+      pitch: MAP_CFG.pitch,
+      attributionControl: false,
+      interactive: false
+    });
+    map.on('load', () => {
+      repaintDark();
+      addRouteLayers();
+      document.getElementById('mapfb').style.display = 'none';
+      document.getElementById('rider').style.display = 'block';
+      mapReady = true;
+    });
+  } catch (e) { /* stay on the fallback art */ }
+}
+
+/* Repaint the pale positron style into dark cartography. Recolouring the
+   layers beats a CSS filter: filters muddy every colour equally, this keeps
+   roads, water and labels separable. */
+function repaintDark() {
+  const layers = map.getStyle().layers.slice();
+  layers.forEach(l => {
+    const id = l.id.toLowerCase();
+    try {
+      if (l.type === 'background') {
+        map.setPaintProperty(l.id, 'background-color', MAP_COL.bg);
+      } else if (l.type === 'fill') {
+        const water = /water|ocean|sea|river|lake/.test(id);
+        map.setPaintProperty(l.id, 'fill-color', water ? MAP_COL.water : MAP_COL.land);
+        if (/building/.test(id)) map.setPaintProperty(l.id, 'fill-color', MAP_COL.building);
+      } else if (l.type === 'line') {
+        const major = /motorway|trunk|primary|secondary/.test(id);
+        map.setPaintProperty(l.id, 'line-color', major ? MAP_COL.roadMajor : MAP_COL.roadMinor);
+      } else if (l.type === 'fill-extrusion') {
+        map.setPaintProperty(l.id, 'fill-extrusion-color', MAP_COL.building);
+        map.setPaintProperty(l.id, 'fill-extrusion-opacity', 0.5);
+      } else if (l.type === 'symbol') {
+        if (!MAP_CFG.showLabels || /poi|housenumber|place_|continent|country/.test(id)) {
+          map.removeLayer(l.id);
+          return;
+        }
+        map.setPaintProperty(l.id, 'text-color', MAP_COL.label);
+        map.setPaintProperty(l.id, 'text-halo-color', MAP_COL.bg);
+        map.setPaintProperty(l.id, 'text-halo-width', 1.5);
+      }
+    } catch (e) { /* layer does not take that property */ }
+  });
+}
+
+function addRouteLayers() {
+  map.addSource('route', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+  map.addLayer({ id: 'route-case', type: 'line', source: 'route',
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: { 'line-color': MAP_COL.routeCase, 'line-width': 13 } });
+  map.addLayer({ id: 'route-line', type: 'line', source: 'route',
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: { 'line-color': MAP_COL.route, 'line-width': 7 } });
+}
+
+/* ---- Routing. Call setDestination(lon, lat) from the console or a UI. ---- */
+let destination = null, lastFix = null, lastRoute = 0;
+
+function setDestination(lon, lat) {
+  destination = (lon === null) ? null : [lon, lat];
+  if (!destination && map && mapReady) {
+    map.getSource('route').setData({ type: 'FeatureCollection', features: [] });
+    document.getElementById('navtext').textContent = '';
+  } else {
+    lastRoute = 0;
+    fetchRoute();
+  }
+}
+
+async function fetchRoute() {
+  if (!destination || !lastFix || !map || !mapReady) return;
+  if (Date.now() - lastRoute < MAP_CFG.rerouteMs) return;
+  lastRoute = Date.now();
+  const u = 'https://router.project-osrm.org/route/v1/driving/' +
+            lastFix[0] + ',' + lastFix[1] + ';' + destination[0] + ',' + destination[1] +
+            '?geometries=geojson&overview=full&steps=true';
+  try {
+    const j = await (await fetch(u)).json();
+    if (!j.routes || !j.routes.length) return;
+    const r = j.routes[0];
+    map.getSource('route').setData({ type: 'Feature', geometry: r.geometry, properties: {} });
+    const step = r.legs[0] && r.legs[0].steps[0];
+    const km = (r.distance / 1000).toFixed(1);
+    const min = Math.round(r.duration / 60);
+    document.getElementById('navtext').innerHTML =
+      (step && step.name ? step.name.toUpperCase() + '<br>' : '') + km + ' KM<br>' + min + ' MIN';
+  } catch (e) { /* offline or server busy: keep the last route on screen */ }
+}
+
+let gpsSpeed = null;
+if (navigator.geolocation) {
+  navigator.geolocation.watchPosition(pos => {
+    const c = pos.coords;
+    lamp('gps', true);
+    if (c.speed != null && !isNaN(c.speed)) gpsSpeed = c.speed * 3.6;
+    lastFix = [c.longitude, c.latitude];
+    fetchRoute();
+    if (map && mapReady) {
+      const opts = { center: [c.longitude, c.latitude], duration: 900 };
+      if (MAP_CFG.rotateWithHeading && c.heading != null && !isNaN(c.heading))
+        opts.bearing = c.heading;
+      map.easeTo(opts);
+    }
+  }, () => lamp('gps', false), { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 });
+}
+
+const polar = (a, r) => {
+  const t = (a - 90) * Math.PI / 180;
+  return [100 + r * Math.cos(t), 100 + r * Math.sin(t)];
+};
+
+/* =========================================================================
+   One dial builder. Sweep and radii are parameters, so the same code makes
+   the big speedo, the little corner gauges, and each ring of the tri dial.
+   ========================================================================= */
+function makeDial(cfg) {
+  const id = ++uid;
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 200 200');
+  svg.setAttribute('aria-label', cfg.label || 'gauge');
+
+  const A0 = cfg.a0 !== undefined ? cfg.a0 : -135;
+  const SPAN = cfg.span !== undefined ? cfg.span : 270;
+  const ang = f => A0 + SPAN * f;
+  const rOut = cfg.rOut || 88;
+  const rTick = cfg.rTick || 76;
+  const rLab = cfg.rLab || 64;
+  const fs = cfg.fs || 8;
+
+  let marks = '';
+  const majors = cfg.majors || 7;
+  for (let i = 0; i <= majors; i++) {
+    const f = i / majors;
+    const [x1, y1] = polar(ang(f), rOut), [x2, y2] = polar(ang(f), rTick);
+    marks += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"
+              stroke="#c6dced" stroke-width="1.7" stroke-linecap="round"/>`;
+    if (cfg.numbers !== false) {
+      const [lx, ly] = polar(ang(f), rLab);
+      const val = cfg.min + (cfg.max - cfg.min) * f;
+      marks += `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" fill="#a8c4d9" font-size="${fs}"
+                font-weight="300" text-anchor="middle" dominant-baseline="central">${
+                Math.abs(val) >= 100 || Number.isInteger(val) ? Math.round(val) : val.toFixed(1)}</text>`;
+    }
+  }
+  const minors = majors * 4;
+  for (let i = 0; i <= minors; i++) {
+    if (i % 4 === 0) continue;
+    const f = i / minors;
+    const [x1, y1] = polar(ang(f), rOut), [x2, y2] = polar(ang(f), rOut - 5);
+    marks += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"
+              stroke="#3c5a76" stroke-width="0.9"/>`;
+  }
+
+  const R = 2 * Math.PI * (rOut + 5), S = SPAN / 360;
+  svg.innerHTML = `
+    <defs>
+      <pattern id="cf${id}" width="6" height="6" patternUnits="userSpaceOnUse">
+        <rect width="6" height="6" fill="#080b10"/><rect width="3" height="3" fill="#0c1016"/>
+        <rect x="3" y="3" width="3" height="3" fill="#0c1016"/>
+      </pattern>
+      <filter id="gl${id}" x="-50%" y="-50%" width="200%" height="200%">
+        <feGaussianBlur stdDeviation="2" result="b"/>
+        <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter>
+    </defs>
+    <circle cx="100" cy="100" r="${rOut + 5}" fill="none" stroke="#0f2035" stroke-width="1.6"
+      stroke-dasharray="${(R*S).toFixed(1)} ${R}" transform="rotate(${A0 - 90} 100 100)"/>
+    <circle id="ring${id}" cx="100" cy="100" r="${rOut + 5}" fill="none" stroke="var(--cyan)"
+      stroke-width="2" stroke-linecap="round" stroke-dasharray="0 ${R}"
+      transform="rotate(${A0 - 90} 100 100)" filter="url(#gl${id})"/>
+    <circle cx="100" cy="100" r="${rTick - 4}" fill="url(#cf${id})"/>
+    ${marks}
+    <text x="100" y="${cfg.labelY || 124}" fill="#5d7186" font-size="${cfg.labelSize || 7}"
+      font-weight="300" letter-spacing="1.4" text-anchor="middle" dominant-baseline="central">${cfg.label || ''}</text>
+    <text id="val${id}" x="100" y="${(cfg.labelY || 124) + 11}" fill="#cfe0ee"
+      font-size="${(cfg.labelSize || 7) + 2}" font-weight="300"
+      text-anchor="middle" dominant-baseline="central">${cfg.showValue === false ? '' : '\u2014'}</text>
+    <g id="ndl${id}" style="transform-origin:100px 100px; transition: transform 140ms linear">
+      <path d="M 100 ${100 - rTick + 4} L 101.4 100 L 98.6 100 Z" fill="${cfg.needle || '#e04a5c'}"/>
+    </g>
+    <circle cx="100" cy="100" r="4.5" fill="#0d1621" stroke="#2f4a63" stroke-width="1.1"/>`;
+
+  document.getElementById(cfg.host).appendChild(svg);
+
+  const ndl = svg.querySelector('#ndl' + id);
+  const ring = svg.querySelector('#ring' + id);
+  const val = svg.querySelector('#val' + id);
+
+  return function set(v) {
+    const f = Math.min(1, Math.max(0, (v - cfg.min) / (cfg.max - cfg.min)));
+    ndl.style.transform = `rotate(${ang(f).toFixed(1)}deg)`;
+    ring.setAttribute('stroke-dasharray', `${(R * S * f).toFixed(1)} ${R}`);
+    let col = cfg.needle || '#e04a5c';
+    if (cfg.danger !== undefined) col = v >= cfg.danger ? '#e04a5c' : v >= cfg.warn ? '#d99a3c' : col;
+    if (cfg.lowest !== undefined) col = v <= cfg.lowest ? '#e04a5c' : v <= cfg.low ? '#d99a3c' : col;
+    ndl.querySelector('path').setAttribute('fill', col);
+    ring.setAttribute('stroke', col === '#e04a5c' && cfg.danger !== undefined ? 'var(--red)' : 'var(--cyan)');
+    if (cfg.showValue !== false)
+      val.textContent = (cfg.decimals ? v.toFixed(cfg.decimals) : Math.round(v)) + (cfg.unit || '');
+  };
+}
+
+/* =========================================================================
+   Wedge dial. One circle cut into three 120-degree slices. Each slice is a
+   gauge in its own right: its own pivot sitting inside that slice, its own
+   scale arcing along the rim, its own needle. Nothing pivots from the
+   centre and no two slices share a scale.
+   ========================================================================= */
+function makeWedgeDial(hostId, channels) {
+  const id = ++uid;
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 200 200');
+  svg.setAttribute('aria-label', 'rpm, power and current');
+
+  const PIV = 42;          // how far each pivot sits from the centre
+  const rOut = 47, rTick = 40, rLab = 29, needleLen = 44;
+  const dir = (b, r) => {
+    const t = b * Math.PI / 180;
+    return [100 + r * Math.sin(t), 100 - r * Math.cos(t)];
+  };
+
+  let body = '';
+
+  // pizza cuts, on the boundary between each pair of slices
+  channels.forEach(c => {
+    const b = c.bearing - 60;
+    const [x1, y1] = dir(b, 13), [x2, y2] = dir(b, 96);
+    body += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"
+             stroke="#16283c" stroke-width="1"/>`;
+  });
+
+  channels.forEach(c => {
+    const [px, py] = dir(c.bearing, PIV);
+    const a0 = c.bearing - 58, a1 = c.bearing + 58;
+    const at = (a, r) => {
+      const t = a * Math.PI / 180;
+      return [px + r * Math.sin(t), py - r * Math.cos(t)];
+    };
+
+    for (let i = 0; i <= 8; i++) {
+      const a = a0 + (a1 - a0) * i / 8, major = i % 2 === 0;
+      const [x1, y1] = at(a, rOut), [x2, y2] = at(a, major ? rTick : rTick + 4);
+      body += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"
+               stroke="${major ? '#c6dced' : '#3c5a76'}" stroke-width="${major ? 1.5 : 0.8}" stroke-linecap="round"/>`;
+      if (major) {
+        const [lx, ly] = at(a, rLab);
+        const val = c.min + (c.max - c.min) * i / 8;
+        body += `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" fill="#95b2c9" font-size="5.5"
+                 font-weight="300" text-anchor="middle" dominant-baseline="central">${
+                 c.max > 1000 ? Math.round(val / 1000) + 'k' : Math.round(val)}</text>`;
+      }
+    }
+
+    const [tx, ty] = dir(c.bearing, 19);
+    body += `<text x="${tx.toFixed(1)}" y="${ty.toFixed(1)}" fill="#5d7186" font-size="6"
+             font-weight="300" letter-spacing="1.2" text-anchor="middle"
+             dominant-baseline="central">${c.label}</text>
+             <text id="w-${c.k}${id}" x="${tx.toFixed(1)}" y="${(ty + 8.5).toFixed(1)}" fill="#cfe0ee"
+             font-size="8" font-weight="300" text-anchor="middle" dominant-baseline="central">\u2014</text>
+             <g id="wn-${c.k}${id}" style="transform-origin:${px.toFixed(1)}px ${py.toFixed(1)}px;
+                transition: transform 150ms linear">
+               <path d="M ${px.toFixed(1)} ${(py - needleLen).toFixed(1)}
+                        L ${(px + 1.3).toFixed(1)} ${py.toFixed(1)}
+                        L ${(px - 1.3).toFixed(1)} ${py.toFixed(1)} Z" fill="${c.col || '#e04a5c'}"/>
+             </g>
+             <circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="3" fill="#0d1621"
+               stroke="#2f4a63" stroke-width="1"/>`;
+  });
+
+  svg.innerHTML = `
+    <defs><pattern id="cf${id}" width="6" height="6" patternUnits="userSpaceOnUse">
+      <rect width="6" height="6" fill="#080b10"/><rect width="3" height="3" fill="#0c1016"/>
+      <rect x="3" y="3" width="3" height="3" fill="#0c1016"/></pattern></defs>
+    <circle cx="100" cy="100" r="97" fill="url(#cf${id})" stroke="#132539" stroke-width="1.6"/>
+    ${body}`;
+  document.getElementById(hostId).appendChild(svg);
+
+  const set = {};
+  channels.forEach(c => {
+    const g = svg.querySelector(`#wn-${c.k}${id}`);
+    const path = g.querySelector('path');
+    const val = svg.querySelector(`#w-${c.k}${id}`);
+    const a0 = c.bearing - 58, a1 = c.bearing + 58;
+    set[c.k] = v => {
+      const f = Math.min(1, Math.max(0, (v - c.min) / (c.max - c.min)));
+      g.style.transform = `rotate(${(a0 + (a1 - a0) * f).toFixed(1)}deg)`;
+      let col = c.col || '#e04a5c';
+      if (c.danger !== undefined) col = v >= c.danger ? '#e04a5c' : v >= c.warn ? '#d99a3c' : col;
+      path.setAttribute('fill', col);
+      val.textContent = (c.decimals ? v.toFixed(c.decimals) : Math.round(v)) + (c.unit || '');
+    };
+  });
+  return set;
+}
+
+/* ------------------------------ instances ------------------------------ */
+const setSpeed = makeDial({ host:'g-speed', min:0, max:140, majors:7, label:'KM/H',
+                            rOut:88, rTick:76, rLab:63, fs:8.5, labelY:126, labelSize:7,
+                            showValue:false });
+const WEDGE = makeWedgeDial('g-wedge', [
+  { k:'rpm', bearing:-60, min:0, max:9000, label:'RPM', col:'#cfe0ee' },
+  { k:'kw',  bearing: 60, min:0, max:16,   label:'kW',  col:'#4bc9e8', decimals:1 },
+  { k:'amp', bearing:180, min:0, max:250,  label:'AMP', col:'#e04a5c', warn:170, danger:210 }
+]);
+
+/* Top-cropped: only the lower half shows, so the scale arcs across the bottom. */
+const HALF_DOWN = { a0: 90,  span: 180, majors: 4, rOut: 82, rTick: 70, rLab: 52,
+                    fs: 11, labelY: 126, labelSize: 11 };
+/* Bottom-cropped: only the upper half shows, so the scale arcs across the top. */
+const HALF_UP   = { a0: -90, span: 180, majors: 4, rOut: 82, rTick: 70, rLab: 52,
+                    fs: 11, labelY: 74,  labelSize: 11 };
+
+const setMos = makeDial({ ...HALF_DOWN, host:'g-mos', min:0, max:140, label:'MOSFET',
+                          unit:'\u00B0', warn:85, danger:110 });
+const setMot = makeDial({ ...HALF_DOWN, host:'g-mot', min:0, max:160, label:'MOTOR',
+                          unit:'\u00B0', warn:100, danger:125 });
+const setSoc = makeDial({ ...HALF_UP, host:'g-soc', min:0, max:100, label:'BATTERY',
+                          unit:'%', lowest:12, low:25, needle:'#5fc98a' });
+const setVlt = makeDial({ ...HALF_UP, host:'g-vlt', min:60, max:90, label:'VOLTS',
+                          unit:'V', majors:3, decimals:1, lowest:63, low:66 });
+const setThr = makeDial({ ...HALF_UP, host:'g-thr', min:0, max:100, label:'THROTTLE',
+                          unit:'%', labelSize:10 });
+const setRat = makeDial({ ...HALF_UP, host:'g-rat', min:0, max:1, label:'RATIO',
+                          decimals:2, numbers:false, labelSize:10 });
+const setPhA = makeDial({ ...HALF_UP, host:'g-pha', min:0, max:600, label:'A PHASE',
+                          unit:'A', labelSize:10 });
+const setPhC = makeDial({ ...HALF_UP, host:'g-phc', min:0, max:600, label:'C PHASE',
+                          unit:'A', labelSize:10 });
+
+/* ===============================================================
+   PLUG THE DECODER IN HERE.
+   =============================================================== */
+let wattSum = 0, wattN = 0;
+
+function applyTelemetry(t) {
+  if (t.power !== undefined) {
+    wattSum += Math.abs(t.power) * 1000;
+    wattN++;
+    const avg = wattSum / wattN;
+    document.getElementById('v-avgw').textContent =
+      avg >= 1000 ? (avg / 1000).toFixed(2) + ' kW' : Math.round(avg) + ' W';
+  }
+  if (MAP_CFG.useGpsSpeed && gpsSpeed !== null) setSpeed(gpsSpeed);
+  else if (t.speed !== undefined) setSpeed(t.speed);
+  if (t.rpm      !== undefined) WEDGE.rpm(t.rpm);
+  if (t.power    !== undefined) WEDGE.kw(Math.abs(t.power));
+  if (t.current  !== undefined) WEDGE.amp(Math.abs(t.current));
+  if (t.mosTemp  !== undefined) setMos(t.mosTemp);
+  if (t.motTemp  !== undefined) setMot(t.motTemp);
+  if (t.soc      !== undefined) setSoc(t.soc);
+  if (t.volts    !== undefined) setVlt(t.volts);
+  if (t.throttle !== undefined) setThr(t.throttle);
+  if (t.mod      !== undefined) setRat(t.mod);
+  if (t.phaseA   !== undefined) setPhA(t.phaseA);
+  if (t.phaseC   !== undefined) setPhC(t.phaseC);
+  if (t.odo  !== undefined) document.getElementById('v-odo').textContent =
+      (t.odo * KM_TO).toLocaleString(undefined, { maximumFractionDigits: 0 }) + ' ' + DIST;
+  if (t.trip !== undefined) document.getElementById('v-trip').textContent =
+      (t.trip * KM_TO).toFixed(1) + ' ' + DIST;
+  if (t.gear     !== undefined) {
+    const g = t.reverse ? 'R' : String(t.gear);
+    document.querySelectorAll('#gear span').forEach(s =>
+      s.className = s.dataset.g === g ? 'act' : '');
+  }
+  if (t.checkMotor !== undefined) lamp('checkMotor', t.checkMotor);
+  if (t.fault      !== undefined) lamp('checkMotor', t.fault);
+  if (t.brake      !== undefined) lamp('brake', t.brake);
+  if (t.regen      !== undefined) lamp('regen', t.regen);
+  if (t.link       !== undefined) lamp('link',  t.link);
+  if (t.highBeam   !== undefined) lamp('highbeam', t.highBeam);
+  if (t.lowBeam    !== undefined) lamp('lowbeam', t.lowBeam);
+  if (t.left       !== undefined) lamp('left', t.left);
+  if (t.right      !== undefined) lamp('right', t.right);
+  if (t.battLow    !== undefined) lamp('battery', t.battLow);
+  if (t.tempWarn   !== undefined) lamp('temp', t.tempWarn);
+}
+
+addEventListener('resize', () => { if (map && mapReady) map.resize(); });
+
+// const ws = new WebSocket('ws://localhost:8765');
+// ws.onmessage = e => applyTelemetry(JSON.parse(e.data));
+
+/* =========================================================================
+   Web Bluetooth. Talks to the controller directly - no PC, no Python.
+   Verified against a real capture from this controller: CRC-16/MODBUS with
+   a 0x7F3C seed, byte 1 carries flags in the top two bits and a table index
+   in the low six.
+   ========================================================================= */
+
+/* ---- YOUR BIKE. The only numbers you should need to change. ---- */
+const POLE_PAIRS   = 5;      // QS138 pole pairs; only affects speed
+const GEAR_RATIO   = 4.0;    // motor turns per wheel turn
+const WHEEL_CIRC_M = 1.9;    // rolling circumference, metres
+const RPM_IS_ELECTRICAL = true;
+
+const SERVICE_UUID = 0xffe0;
+const CHAR_UUID    = 0xffec;
+
+const FLASH_READ_ADDR = [
+  0xE2,0xE8,0xEE,0x00,0x06,0x0C,0x12, 0xE2,0xE8,0xEE,0x18,0x1E,0x24,0x2A,
+  0xE2,0xE8,0xEE,0x30,0x5D,0x63,0x69, 0xE2,0xE8,0xEE,0x7C,0x82,0x88,0x8E,
+  0xE2,0xE8,0xEE,0x94,0x9A,0xA0,0xA6, 0xE2,0xE8,0xEE,0xAC,0xB2,0xB8,0xBE,
+  0xE2,0xE8,0xEE,0xC4,0xCA,0xD0, 0xE2,0xE8,0xEE,0xD6,0xDC,0xF4,0xFA
+];
+
+function crc16(d, len) {
+  let c = 0x7F3C;
+  for (let i = 0; i < len; i++) {
+    c ^= d[i];
+    for (let b = 0; b < 8; b++) c = (c & 1) ? (c >> 1) ^ 0xA001 : c >> 1;
+  }
+  return c & 0xFFFF;
+}
+
+const T = {};              // rolling state, same shape the dashboard expects
+let live = false, frames = 0, bad = 0;
+
+function feedFrame(f) {
+  if (f.length !== 16 || f[0] !== 0xAA) return;
+  if (crc16(f, 14) !== ((f[15] << 8) | f[14])) { bad++; return; }
+  frames++;
+  const idx = f[1] & 0x3F;
+  if (idx >= FLASH_READ_ADDR.length) return;
+  const addr = FLASH_READ_ADDR[idx];
+  const p = f.subarray(2, 14);
+  const dv = new DataView(p.buffer, p.byteOffset, p.byteLength);
+
+  if (addr === 0xE2) {
+    const raw = dv.getUint16(6, true);
+    const mech = RPM_IS_ELECTRICAL ? raw / POLE_PAIRS : raw;
+    T.rpm = mech;
+    T.speed = (mech / GEAR_RATIO) * WHEEL_CIRC_M * 60 / 1000;
+    T.gear = (p[0] >> 2) & 3;
+    T.reverse = !!(p[1] & 1);
+    T.brake = !!(p[0] & 0x20);
+  } else if (addr === 0xE8) {
+    T.volts = dv.getInt16(0, true) / 10;
+    T.current = dv.getInt16(4, true) / 4;
+    T.power = T.volts * T.current / 1000;
+    T.regen = T.current < -0.5;
+  } else if (addr === 0xEE) {
+    const amp = r => r > 0 ? 1.953125 * Math.sqrt(r) : 0;
+    T.phaseA = amp((p[4] << 16) | (p[5] << 8) | p[6]);
+    T.phaseC = amp((p[7] << 16) | (p[8] << 8) | p[9]);
+  } else if (addr === 0xD6) {
+    T.mosTemp = dv.getInt16(10, true);
+  } else if (addr === 0xF4) {
+    T.motTemp = dv.getInt16(0, true);
+    T.soc = p[3];
+  }
+
+  T.link = true;
+  if (T.mosTemp !== undefined && T.motTemp !== undefined)
+    T.tempWarn = T.mosTemp > 110 || T.motTemp > 125;
+  if (T.soc !== undefined) T.battLow = T.soc < 20;
+  applyTelemetry(T);
+}
+
+const cmsg = m => document.getElementById('connect-msg').textContent = m;
+
+async function connectController() {
+  if (!navigator.bluetooth) {
+    cmsg('This browser has no Web Bluetooth. Use Chrome, and make sure the page is on https.');
+    return;
+  }
+  try {
+    cmsg('Choose YuanQuFOC096 from the list.');
+    const dev = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: 'YuanQu' }],
+      optionalServices: [SERVICE_UUID]
+    });
+    dev.addEventListener('gattserverdisconnected', () => {
+      live = false;
+      T.link = false;
+      applyTelemetry(T);
+      document.getElementById('connect').classList.remove('hidden');
+      cmsg('Controller disconnected. Tap to reconnect.');
+    });
+    cmsg('Connecting...');
+    const server = await dev.gatt.connect();
+    const svc = await server.getPrimaryService(SERVICE_UUID);
+    const ch = await svc.getCharacteristic(CHAR_UUID);
+    await ch.startNotifications();
+    ch.addEventListener('characteristicvaluechanged', e =>
+      feedFrame(new Uint8Array(e.target.value.buffer)));
+
+    live = true;
+    document.getElementById('connect').classList.add('hidden');
+
+    try { await navigator.wakeLock.request('screen'); } catch (e) {}
+    try { await document.documentElement.requestFullscreen(); } catch (e) {}
+  } catch (e) {
+    cmsg('Could not connect: ' + e.message);
+  }
+}
+
+document.getElementById('btn-connect').addEventListener('click', connectController);
+
+/* Demo feed. Runs only until the controller connects. */
+let k = 0;
+setInterval(() => {
+  if (live) return;
+  k += 0.045;
+  const th = Math.sin(k * 0.55) * 0.5 + 0.5;
+  const amps = th * 195;
+  const volts = 82 - th * 5.5;
+  applyTelemetry({
+    speed: th * 122, rpm: th * 6400, volts, current: amps,
+    power: volts * amps / 1000, soc: 78 - k * 0.02,
+    mosTemp: 42 + th * 42, motTemp: 55 + th * 58,
+    throttle: th * 100, mod: th * 0.9,
+    phaseA: th * 430, phaseC: th * 425,
+    odo: 7444475, trip: 41.6, gear: 'D', reverse: false,
+    checkMotor: false, brake: false, regen: false, link: true,
+    highBeam: Math.sin(k * 0.13) > 0, lowBeam: Math.sin(k * 0.13) <= 0,
+    left: Math.sin(k * 0.21) > 0.85, right: Math.sin(k * 0.17) < -0.85,
+    battLow: (78 - k * 0.02) < 25,
+    tempWarn: (55 + th * 58) > 125
+  });
+}, 50);
+</script>
+</body>
+</html>
